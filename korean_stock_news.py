@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -37,6 +38,7 @@ class NewsItem:
     published: Optional[str]   # ISO-8601 string for JSON serialisability
     summary: str = ""
     language: str = "en"
+    publisher_domain: str = ""  # e.g. "www.kedglobal.com"
 
     def published_dt(self) -> Optional[datetime]:
         if not self.published:
@@ -57,29 +59,24 @@ GOOGLE_NEWS_RSS = (
 )
 
 SOURCES = [
-    # --- Korean-language Google News queries ---
+    # --- Korean-language direct RSS feeds (real article URLs) ---
     {
-        "url": GOOGLE_NEWS_RSS.format(
-            query=quote_plus("코스피 주식"), hl="ko", gl="KR", ceid="KR:ko"
-        ),
-        "label": "Google News (KO) – 코스피",
+        "url": "https://www.yna.co.kr/rss/economy.xml",
+        "label": "연합뉴스 – 경제",
         "lang": "ko",
     },
     {
-        "url": GOOGLE_NEWS_RSS.format(
-            query=quote_plus("코스닥"), hl="ko", gl="KR", ceid="KR:ko"
-        ),
-        "label": "Google News (KO) – 코스닥",
+        "url": "https://www.hankyung.com/feed/finance",
+        "label": "한국경제 – 금융",
         "lang": "ko",
     },
+    # --- English-language direct RSS feeds (real article URLs) ---
     {
-        "url": GOOGLE_NEWS_RSS.format(
-            query=quote_plus("한국 증시 주식시장"), hl="ko", gl="KR", ceid="KR:ko"
-        ),
-        "label": "Google News (KO) – 한국증시",
-        "lang": "ko",
+        "url": "https://www.kedglobal.com/rss/market.xml",
+        "label": "KED Global – Market",
+        "lang": "en",
     },
-    # --- English-language Google News queries ---
+    # --- English-language Google News queries (redirect URLs, work in browser) ---
     {
         "url": GOOGLE_NEWS_RSS.format(
             query=quote_plus("KOSPI stock market"), hl="en", gl="US", ceid="US:en"
@@ -101,17 +98,13 @@ SOURCES = [
         "label": "Google News (EN) – KRX",
         "lang": "en",
     },
-    # --- Korea Herald (English-language Korean news outlet) ---
+    # --- Korean-language Google News (additional Korean coverage) ---
     {
-        "url": "https://www.koreaherald.com/rss/020200000000.xml",
-        "label": "Korea Herald – Finance",
-        "lang": "en",
-    },
-    # --- Yonhap News English RSS (Economy section) ---
-    {
-        "url": "https://en.yna.co.kr/RSS/economy.xml",
-        "label": "Yonhap News – Economy",
-        "lang": "en",
+        "url": GOOGLE_NEWS_RSS.format(
+            query=quote_plus("코스피 코스닥 증시"), hl="ko", gl="KR", ceid="KR:ko"
+        ),
+        "label": "Google News (KO) – 증시",
+        "lang": "ko",
     },
 ]
 
@@ -175,10 +168,21 @@ def fetch_source(source: dict, timeout: int = 10) -> list[NewsItem]:
             or getattr(entry, "description", "")
             or ""
         )
+
         summary = _clean_html(summary_raw)[:300]
 
         if not title or not url:
             continue
+
+        # Store publisher domain for URL resolution
+        publisher_domain = ""
+        src = getattr(entry, "source", None)
+        if src:
+            href = src.get("href", "") if isinstance(src, dict) else getattr(src, "href", "")
+            if href:
+                m = re.match(r"https?://([^/]+)", href)
+                if m:
+                    publisher_domain = m.group(1)
 
         items.append(
             NewsItem(
@@ -188,6 +192,7 @@ def fetch_source(source: dict, timeout: int = 10) -> list[NewsItem]:
                 published=_parse_published(entry),
                 summary=summary,
                 language=source["lang"],
+                publisher_domain=publisher_domain,
             )
         )
     return items
@@ -199,6 +204,107 @@ def fetch_all(sources: list[dict], delay: float = 0.3) -> list[NewsItem]:
         all_items.extend(fetch_source(source))
         time.sleep(delay)
     return all_items
+
+
+# ---------------------------------------------------------------------------
+# URL resolution  (Google News RSS → real article URLs)
+# ---------------------------------------------------------------------------
+
+def _extract_article_url_from_gnews_summary(summary_html: str) -> Optional[str]:
+    """
+    Google News RSS <description> HTML may contain a direct article <a href>.
+    Return the first non-Google href found, or None.
+    """
+    if not summary_html:
+        return None
+    for m in re.finditer(r'href="(https?://[^"]+)"', summary_html):
+        candidate = m.group(1)
+        if "news.google.com" not in candidate:
+            return candidate
+    return None
+
+
+def _ddg_search_url(title: str, publisher_domain: str, timeout: int = 8) -> Optional[str]:
+    """
+    Use DuckDuckGo HTML search to find the real article URL on the publisher's site.
+    Returns None on failure (rate-limiting, no results, wrong domain).
+    """
+    from urllib.parse import unquote as _unquote
+
+    # Strip the "- Publisher Name" tail appended by Google News
+    clean_title = re.sub(r"\s*[-|]\s*\S[\S ]{0,40}\s*$", "", title).strip()[:100]
+    if not clean_title or not publisher_domain:
+        return None
+
+    query = f"site:{publisher_domain} {clean_title}"
+    try:
+        resp = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={
+                **HEADERS,
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html",
+            },
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return None
+        matches = re.findall(r"uddg=([^&\"]+)", resp.text)
+        if matches:
+            url = _unquote(matches[0])
+            if publisher_domain in url and "duckduckgo" not in url:
+                return url
+        spans = re.findall(r'class="result__url"[^>]*>\s*([^\s<]+)', resp.text)
+        if spans:
+            candidate = "https://" + spans[0].strip()
+            if publisher_domain in candidate:
+                return candidate
+    except Exception:
+        pass
+    return None
+
+
+def resolve_urls(items: list[NewsItem], max_workers: int = 3) -> list[NewsItem]:
+    """
+    Attempt to resolve Google News redirect URLs to real article URLs.
+    Uses DuckDuckGo search with low concurrency to respect rate limits.
+    Falls back gracefully — Google News URLs still work when clicked in a browser.
+    """
+    indices = [i for i, item in enumerate(items) if "news.google.com" in item.url]
+    if not indices:
+        return items
+
+    print(
+        f"Resolving {len(indices)} Google News URLs via search…",
+        file=sys.stderr,
+    )
+
+    resolved_count = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(
+                _ddg_search_url, items[i].title, items[i].publisher_domain
+            ): i
+            for i in indices
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            result = future.result()
+            if result:
+                items[idx].url = result
+                resolved_count += 1
+
+    still = len(indices) - resolved_count
+    print(
+        f"  Resolved {resolved_count}/{len(indices)} "
+        f"({still} remain as Google News links)",
+        file=sys.stderr,
+    )
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +335,10 @@ def filter_by_keywords(items: list[NewsItem], keywords: list[str]) -> list[NewsI
 def sort_by_date(items: list[NewsItem]) -> list[NewsItem]:
     def key(item: NewsItem):
         dt = item.published_dt()
-        return dt if dt is not None else datetime.min
+        if dt is None:
+            return datetime.min
+        # Strip timezone to make all datetimes comparable
+        return dt.replace(tzinfo=None)
     return sorted(items, key=key, reverse=True)
 
 
@@ -398,8 +507,14 @@ def print_items(items: list[NewsItem], max_summary_len: int = 200) -> None:
             + ("  " + _yellow(date_str) if date_str else "")
         )
 
-        # Explicit link line so the URL is always visible as plain text too
-        print(f"     {_dim('Link:')} {item.url}")
+        # Show the link; if it's still a Google News redirect, also show publisher domain
+        if "news.google.com" in item.url and item.publisher_domain:
+            print(
+                f"     {_dim('Link:')} {item.url}"
+                f"  {_dim(f'(via {item.publisher_domain})')}"
+            )
+        else:
+            print(f"     {_dim('Link:')} {item.url}")
 
         # Summary
         if item.summary and max_summary_len > 0:
@@ -469,6 +584,11 @@ Token tracking (--analyze) requires ANTHROPIC_API_KEY and the anthropic package:
         help="Output results as JSON instead of human-readable text",
     )
     parser.add_argument(
+        "--no-resolve",
+        action="store_true",
+        help="Skip URL resolution (faster, but shows Google News redirect URLs)",
+    )
+    parser.add_argument(
         "--no-summary",
         action="store_true",
         help="Do not display article summaries",
@@ -499,6 +619,9 @@ def main() -> None:
 
     items = sort_by_date(items)
     items = items[: args.max]
+
+    if not args.no_resolve:
+        items = resolve_urls(items)
 
     if args.json:
         output = [asdict(item) for item in items]
