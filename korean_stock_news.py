@@ -4,13 +4,16 @@ Korean Stock Market News Searcher
 
 Fetches and displays news relevant to the Korean stock market (KOSPI, KOSDAQ, KRX)
 from multiple RSS/web sources in both Korean and English.
+
+Use --analyze to get an AI-generated market summary with token usage stats.
 """
 
 import argparse
 import json
+import os
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Optional
@@ -112,6 +115,10 @@ SOURCES = [
     },
 ]
 
+# Claude model used for AI analysis
+_CLAUDE_MODEL = "claude-opus-4-7"
+_CONTEXT_WINDOW = 1_000_000  # Opus 4.7 context window
+
 
 # ---------------------------------------------------------------------------
 # Fetcher
@@ -127,14 +134,12 @@ HEADERS = {
 
 
 def _clean_html(text: str) -> str:
-    """Strip HTML tags and decode entities."""
     text = re.sub(r"<[^>]+>", " ", text)
     text = html.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def _parse_published(entry) -> Optional[str]:
-    """Return ISO-8601 string from a feedparser entry, or None."""
     for attr in ("published", "updated"):
         raw = getattr(entry, attr, None)
         if raw:
@@ -153,7 +158,6 @@ def _parse_published(entry) -> Optional[str]:
 
 
 def fetch_source(source: dict, timeout: int = 10) -> list[NewsItem]:
-    """Fetch and parse a single RSS source."""
     items: list[NewsItem] = []
     try:
         resp = requests.get(source["url"], headers=HEADERS, timeout=timeout)
@@ -189,11 +193,7 @@ def fetch_source(source: dict, timeout: int = 10) -> list[NewsItem]:
     return items
 
 
-def fetch_all(
-    sources: list[dict],
-    delay: float = 0.3,
-) -> list[NewsItem]:
-    """Fetch all sources with a small polite delay between requests."""
+def fetch_all(sources: list[dict], delay: float = 0.3) -> list[NewsItem]:
     all_items: list[NewsItem] = []
     for source in sources:
         all_items.extend(fetch_source(source))
@@ -206,7 +206,6 @@ def fetch_all(
 # ---------------------------------------------------------------------------
 
 def deduplicate(items: list[NewsItem]) -> list[NewsItem]:
-    """Remove items with identical URLs."""
     seen: set[str] = set()
     unique: list[NewsItem] = []
     for item in items:
@@ -217,10 +216,7 @@ def deduplicate(items: list[NewsItem]) -> list[NewsItem]:
     return unique
 
 
-def filter_by_keywords(
-    items: list[NewsItem], keywords: list[str]
-) -> list[NewsItem]:
-    """Keep only items whose title or summary contain at least one keyword."""
+def filter_by_keywords(items: list[NewsItem], keywords: list[str]) -> list[NewsItem]:
     kw_lower = [k.lower() for k in keywords]
     result = []
     for item in items:
@@ -231,19 +227,16 @@ def filter_by_keywords(
 
 
 def sort_by_date(items: list[NewsItem]) -> list[NewsItem]:
-    """Sort newest-first; items without a date go to the end."""
     def key(item: NewsItem):
         dt = item.published_dt()
         return dt if dt is not None else datetime.min
-
     return sorted(items, key=key, reverse=True)
 
 
 # ---------------------------------------------------------------------------
-# Display
+# Display helpers
 # ---------------------------------------------------------------------------
 
-# ANSI colour helpers (degrade gracefully on non-TTY)
 def _supports_color() -> bool:
     return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
@@ -266,9 +259,117 @@ def _yellow(t: str) -> str:
     return _color("33", t)
 
 
+def _green(t: str) -> str:
+    return _color("32", t)
+
+
 def _dim(t: str) -> str:
     return _color("2", t)
 
+
+def _hyperlink(url: str, text: str) -> str:
+    """Wrap text in an OSC 8 terminal hyperlink (clickable in modern terminals)."""
+    if _supports_color():
+        return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+    return text
+
+
+# ---------------------------------------------------------------------------
+# AI analysis & token tracking
+# ---------------------------------------------------------------------------
+
+def analyze_with_claude(items: list[NewsItem]) -> tuple[str, object]:
+    """
+    Send news headlines to Claude for a market summary.
+    Returns (summary_text, usage_object).
+    Requires ANTHROPIC_API_KEY env var.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        print(
+            "  [error] anthropic package not installed. Run: pip install anthropic",
+            file=sys.stderr,
+        )
+        return "", None
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print(
+            "  [error] ANTHROPIC_API_KEY environment variable not set.",
+            file=sys.stderr,
+        )
+        return "", None
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    headlines = "\n".join(
+        f"- [{item.language.upper()}] {item.title}"
+        for item in items[:25]
+    )
+
+    prompt = (
+        "아래는 오늘의 한국 주식시장 뉴스 헤드라인입니다.\n"
+        "Below are today's Korean stock market news headlines.\n\n"
+        f"{headlines}\n\n"
+        "Please provide:\n"
+        "1. A 2-3 sentence market summary in Korean (한국어 요약)\n"
+        "2. A 2-3 sentence market summary in English\n"
+        "3. The top 3 key themes or movers you see in these headlines"
+    )
+
+    try:
+        response = client.messages.create(
+            model=_CLAUDE_MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = next((b.text for b in response.content if b.type == "text"), "")
+        return text, response.usage
+    except Exception as exc:
+        print(f"  [error] Claude API call failed: {exc}", file=sys.stderr)
+        return "", None
+
+
+def print_token_stats(usage, label: str = "AI Analysis") -> None:
+    """Print a token usage summary bar."""
+    if usage is None:
+        return
+
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    total_used = input_tokens + output_tokens
+    remaining = max(0, _CONTEXT_WINDOW - total_used)
+    pct_used = total_used / _CONTEXT_WINDOW * 100
+
+    width = 78
+    bar_width = 40
+    filled = max(1, int(bar_width * total_used / _CONTEXT_WINDOW))
+    bar = "█" * filled + "░" * (bar_width - filled)
+
+    print()
+    print(_bold("─" * width))
+    print(_bold(f"  Token Usage  ·  {label}  ·  Model: {_CLAUDE_MODEL}"))
+    print(_bold("─" * width))
+    print(
+        f"  Input   : {_yellow(f'{input_tokens:>10,}')} tokens"
+    )
+    print(
+        f"  Output  : {_yellow(f'{output_tokens:>10,}')} tokens"
+    )
+    print(
+        f"  Total   : {_bold(f'{total_used:>10,}')} tokens  ({pct_used:.3f}% of context window)"
+    )
+    print(
+        f"  Remaining: {_green(f'{remaining:>9,}')} tokens  (context window: {_CONTEXT_WINDOW:,})"
+    )
+    print(f"\n  [{_green(bar[:filled]) + _dim(bar[filled:])}]")
+    print(_bold("─" * width))
+
+
+# ---------------------------------------------------------------------------
+# Article display
+# ---------------------------------------------------------------------------
 
 def print_items(items: list[NewsItem], max_summary_len: int = 200) -> None:
     if not items:
@@ -281,9 +382,11 @@ def print_items(items: list[NewsItem], max_summary_len: int = 200) -> None:
     print(_bold("=" * width))
 
     for i, item in enumerate(items, start=1):
-        # Header row
         lang_tag = f"[{item.language.upper()}]"
-        print(f"\n{_bold(f'{i:>3}.')} {_cyan(item.title)}")
+
+        # Title as a clickable hyperlink (OSC 8) in supporting terminals
+        clickable_title = _hyperlink(item.url, item.title)
+        print(f"\n{_bold(f'{i:>3}.')} {_cyan(clickable_title)}")
 
         # Meta line
         date_str = ""
@@ -295,11 +398,11 @@ def print_items(items: list[NewsItem], max_summary_len: int = 200) -> None:
             + ("  " + _yellow(date_str) if date_str else "")
         )
 
-        # URL
-        print(_dim(f"     {item.url}"))
+        # Explicit link line so the URL is always visible as plain text too
+        print(f"     {_dim('Link:')} {item.url}")
 
         # Summary
-        if item.summary:
+        if item.summary and max_summary_len > 0:
             summary = item.summary[:max_summary_len]
             if len(item.summary) > max_summary_len:
                 summary += "…"
@@ -317,12 +420,19 @@ def build_parser() -> argparse.ArgumentParser:
         prog="korean_stock_news",
         description="Search the internet for Korean stock market news.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
   python korean_stock_news.py
   python korean_stock_news.py --lang ko --max 15
   python korean_stock_news.py --keyword 삼성 --keyword 반도체
+  python korean_stock_news.py --analyze          # AI summary + token usage
   python korean_stock_news.py --json > news.json
+
+Token tracking (--analyze) requires ANTHROPIC_API_KEY and the anthropic package:
+  pip install anthropic
+  export ANTHROPIC_API_KEY=sk-ant-...
+  python korean_stock_news.py --analyze
+  (uses {_CLAUDE_MODEL}, context window {_CONTEXT_WINDOW:,} tokens)
 """,
     )
     parser.add_argument(
@@ -343,7 +453,15 @@ Examples:
         action="append",
         dest="keywords",
         metavar="WORD",
-        help="Filter by keyword (can be repeated, e.g. --keyword 삼성 --keyword 반도체)",
+        help="Filter by keyword (can be repeated)",
+    )
+    parser.add_argument(
+        "--analyze",
+        action="store_true",
+        help=(
+            "Use Claude AI to summarize the market news and display token usage. "
+            "Requires ANTHROPIC_API_KEY."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -385,8 +503,21 @@ def main() -> None:
     if args.json:
         output = [asdict(item) for item in items]
         print(json.dumps(output, ensure_ascii=False, indent=2))
-    else:
-        print_items(items, max_summary_len=0 if args.no_summary else 200)
+        return
+
+    print_items(items, max_summary_len=0 if args.no_summary else 200)
+
+    if args.analyze:
+        print(f"\nAsking {_CLAUDE_MODEL} for a market summary…", file=sys.stderr)
+        summary, usage = analyze_with_claude(items)
+        if summary:
+            width = 78
+            print()
+            print(_bold("=" * width))
+            print(_bold("  AI Market Summary"))
+            print(_bold("=" * width))
+            print(summary)
+        print_token_stats(usage, label="Market Summary")
 
 
 if __name__ == "__main__":
