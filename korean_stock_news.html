@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Korean Stock Market News | 한국 주식시장 뉴스</title>
+  <style>
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --surface2: #21262d;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --dim:      #7d8590;
+      --green:    #3fb950;
+      --blue:     #58a6ff;
+      --purple:   #bc8cff;
+      --red:      #f85149;
+      --yellow:   #d29922;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR',
+                   'Apple SD Gothic Neo', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* ── Header ───────────────────────────────────────────────── */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px;
+    }
+
+    .header-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+
+    h1 .accent { color: var(--green); }
+
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    #lastUpdated {
+      font-size: 0.75rem;
+      color: var(--dim);
+    }
+
+    .btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: background 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--border); border-color: var(--dim); }
+    .btn:disabled { opacity: 0.45; cursor: default; }
+
+    /* ── Controls ─────────────────────────────────────────────── */
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .tabs { display: flex; gap: 6px; }
+
+    .tab {
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--dim);
+      transition: all 0.15s;
+    }
+    .tab.active {
+      background: var(--green);
+      border-color: var(--green);
+      color: #000;
+      font-weight: 700;
+    }
+
+    #searchBox {
+      flex: 1;
+      min-width: 180px;
+      max-width: 380px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      outline: none;
+    }
+    #searchBox:focus { border-color: var(--blue); }
+    #searchBox::placeholder { color: var(--dim); }
+
+    /* ── Main ─────────────────────────────────────────────────── */
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    /* ── Stats bar ────────────────────────────────────────────── */
+    #statsBar {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .stat { font-size: 0.78rem; color: var(--dim); }
+    .stat strong { color: var(--text); }
+
+    /* ── Errors ───────────────────────────────────────────────── */
+    #errorsBox { margin-bottom: 14px; }
+
+    .err-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(248,81,73,0.1);
+      border: 1px solid rgba(248,81,73,0.35);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.74rem;
+      color: var(--red);
+      margin: 0 6px 6px 0;
+    }
+
+    /* ── Loading ──────────────────────────────────────────────── */
+    .loading {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--dim);
+    }
+
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--green);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto 14px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Empty ────────────────────────────────────────────────── */
+    .empty {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--dim);
+      font-size: 0.95rem;
+    }
+
+    /* ── Article grid ─────────────────────────────────────────── */
+    #grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 14px;
+    }
+
+    /* ── Card ─────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 15px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.15s, transform 0.1s;
+      text-decoration: none;
+      color: inherit;
+    }
+    .card:hover {
+      border-color: var(--blue);
+      transform: translateY(-2px);
+    }
+
+    .card-meta {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 10px;
+      letter-spacing: 0.5px;
+    }
+    .badge-ko {
+      background: rgba(188,140,255,0.15);
+      color: var(--purple);
+      border: 1px solid rgba(188,140,255,0.3);
+    }
+    .badge-en {
+      background: rgba(88,166,255,0.15);
+      color: var(--blue);
+      border: 1px solid rgba(88,166,255,0.3);
+    }
+
+    .card-source {
+      font-size: 0.73rem;
+      color: var(--dim);
+    }
+
+    .card-title {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.45;
+    }
+
+    .card-summary {
+      font-size: 0.8rem;
+      color: var(--dim);
+      line-height: 1.55;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      flex: 1;
+    }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 6px;
+      border-top: 1px solid var(--border);
+    }
+
+    .card-date { font-size: 0.73rem; color: var(--dim); }
+
+    .card-cta {
+      font-size: 0.76rem;
+      color: var(--blue);
+      font-weight: 500;
+    }
+
+    /* ── Responsive ───────────────────────────────────────────── */
+    @media (max-width: 640px) {
+      #grid { grid-template-columns: 1fr; }
+      main { padding: 14px; }
+      h1 { font-size: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="header-row">
+      <h1>Korean Stock Market News &nbsp;<span class="accent">한국 주식시장</span></h1>
+      <div class="header-meta">
+        <span id="lastUpdated">Loading…</span>
+        <button class="btn" id="refreshBtn" onclick="loadNews()">Refresh</button>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="tabs">
+        <button class="tab active" onclick="setLang('all')">All</button>
+        <button class="tab" onclick="setLang('ko')">한국어</button>
+        <button class="tab" onclick="setLang('en')">English</button>
+      </div>
+      <input id="searchBox" type="text" placeholder="Search keywords… / 검색어 입력" oninput="renderArticles()">
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="statsBar"></div>
+  <div id="errorsBox"></div>
+  <div id="content">
+    <div class="loading">
+      <div class="spinner"></div>
+      Fetching Korean stock market news…
+    </div>
+  </div>
+</main>
+
+<script>
+  // ── Config ────────────────────────────────────────────────────────────────
+  const RSS2JSON = 'https://api.rss2json.com/v1/api.json?count=50&rss_url=';
+
+  const SOURCES = [
+    { url: 'https://www.yna.co.kr/rss/economy.xml',       label: '연합뉴스 – 경제',    lang: 'ko' },
+    { url: 'https://www.hankyung.com/feed/finance',        label: '한국경제 – 금융',    lang: 'ko' },
+    { url: 'https://www.kedglobal.com/rss/market.xml',     label: 'KED Global',         lang: 'en' },
+    {
+      url: 'https://news.google.com/rss/search?q=KOSPI+stock+market&hl=en&gl=US&ceid=US:en',
+      label: 'Google News – KOSPI', lang: 'en'
+    },
+    {
+      url: 'https://news.google.com/rss/search?q=KOSDAQ+Korea&hl=en&gl=US&ceid=US:en',
+      label: 'Google News – KOSDAQ', lang: 'en'
+    },
+    {
+      url: 'https://news.google.com/rss/search?q=Korea+stock+exchange+KRX&hl=en&gl=US&ceid=US:en',
+      label: 'Google News – KRX', lang: 'en'
+    },
+    {
+      url: 'https://news.google.com/rss/search?q=%EC%BD%94%EC%8A%A4%ED%94%BC+%EC%BD%94%EC%8A%A4%EB%8B%A5+%EC%A6%9D%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko',
+      label: 'Google News – 증시', lang: 'ko'
+    },
+  ];
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let allArticles = [];
+  let errors      = [];
+  let currentLang = 'all';
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function stripHtml(html) {
+    const d = document.createElement('div');
+    d.innerHTML = html || '';
+    return (d.textContent || d.innerText || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function relativeTime(dateStr) {
+    if (!dateStr) return '';
+    try {
+      const diff = Math.floor((Date.now() - new Date(dateStr)) / 60000);
+      if (diff < 1)    return 'just now';
+      if (diff < 60)   return diff + 'm ago';
+      if (diff < 1440) return Math.floor(diff / 60) + 'h ago';
+      const d = new Date(dateStr);
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    } catch { return ''; }
+  }
+
+  // ── Fetch one source via rss2json ─────────────────────────────────────────
+  async function fetchSource(source) {
+    const url  = RSS2JSON + encodeURIComponent(source.url);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(14000) });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if (data.status !== 'ok') throw new Error(data.message || 'RSS error');
+    return (data.items || []).map(item => ({
+      title:    stripHtml(item.title || ''),
+      url:      item.link || '',
+      source:   source.label,
+      lang:     source.lang,
+      pubStr:   item.pubDate || '',
+      pubDate:  item.pubDate ? new Date(item.pubDate) : new Date(0),
+      summary:  stripHtml(item.description || '').slice(0, 240),
+    })).filter(a => a.title && a.url);
+  }
+
+  // ── Load all sources ──────────────────────────────────────────────────────
+  async function loadNews() {
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true;
+    document.getElementById('content').innerHTML = `
+      <div class="loading"><div class="spinner"></div>Fetching news from ${SOURCES.length} sources…</div>`;
+    document.getElementById('statsBar').innerHTML  = '';
+    document.getElementById('errorsBox').innerHTML = '';
+
+    allArticles = [];
+    errors      = [];
+
+    const results = await Promise.allSettled(SOURCES.map(fetchSource));
+
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        allArticles.push(...r.value);
+      } else {
+        errors.push(`${SOURCES[i].label}: ${r.reason?.message || 'failed'}`);
+      }
+    });
+
+    // Deduplicate by URL stem
+    const seen = new Set();
+    allArticles = allArticles.filter(a => {
+      const key = a.url.split('?')[0].replace(/\/$/, '');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // Newest first
+    allArticles.sort((a, b) => b.pubDate - a.pubDate);
+
+    document.getElementById('lastUpdated').textContent =
+      'Updated ' + new Date().toLocaleTimeString();
+    btn.disabled = false;
+
+    renderErrors();
+    renderArticles();
+  }
+
+  // ── Render errors ─────────────────────────────────────────────────────────
+  function renderErrors() {
+    document.getElementById('errorsBox').innerHTML =
+      errors.map(e => `<span class="err-pill">&#9888; ${esc(e)}</span>`).join('');
+  }
+
+  // ── Set language filter ───────────────────────────────────────────────────
+  function setLang(lang) {
+    currentLang = lang;
+    document.querySelectorAll('.tab').forEach((t, i) => {
+      t.classList.toggle('active', ['all', 'ko', 'en'][i] === lang);
+    });
+    renderArticles();
+  }
+
+  // ── Render article cards ──────────────────────────────────────────────────
+  function renderArticles() {
+    const q = document.getElementById('searchBox').value.toLowerCase().trim();
+    const words = q ? q.split(/\s+/) : [];
+
+    const visible = allArticles.filter(a => {
+      if (currentLang !== 'all' && a.lang !== currentLang) return false;
+      if (words.length) {
+        const haystack = (a.title + ' ' + a.summary + ' ' + a.source).toLowerCase();
+        return words.every(w => haystack.includes(w));
+      }
+      return true;
+    });
+
+    // Stats
+    const koN = allArticles.filter(a => a.lang === 'ko').length;
+    const enN = allArticles.filter(a => a.lang === 'en').length;
+    document.getElementById('statsBar').innerHTML = `
+      <span class="stat">Showing <strong>${visible.length}</strong> of ${allArticles.length} articles</span>
+      <span class="stat">Korean <strong>${koN}</strong></span>
+      <span class="stat">English <strong>${enN}</strong></span>
+    `;
+
+    const content = document.getElementById('content');
+
+    if (!visible.length) {
+      content.innerHTML = '<div class="empty">No articles found. Try a different search or filter.</div>';
+      return;
+    }
+
+    const cards = visible.map(a => {
+      const isGNews = a.url.includes('news.google.com');
+      return `
+      <a class="card" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">
+        <div class="card-meta">
+          <span class="badge badge-${a.lang}">${a.lang.toUpperCase()}</span>
+          <span class="card-source">${esc(a.source)}</span>
+        </div>
+        <div class="card-title">${esc(a.title)}</div>
+        ${a.summary ? `<div class="card-summary">${esc(a.summary)}</div>` : ''}
+        <div class="card-footer">
+          <span class="card-date">${esc(relativeTime(a.pubStr))}</span>
+          <span class="card-cta">${isGNews ? 'Open via Google News' : 'Read article'} &rarr;</span>
+        </div>
+      </a>`;
+    }).join('');
+
+    content.innerHTML = `<div id="grid">${cards}</div>`;
+  }
+
+  // ── Boot ──────────────────────────────────────────────────────────────────
+  loadNews();
+</script>
+</body>
+</html>
